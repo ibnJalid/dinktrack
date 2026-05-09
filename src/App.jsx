@@ -42,6 +42,29 @@ function saveState(state) {
   catch (e) { console.error("save failed", e); }
 }
 
+// ---------- Streak detection ----------
+// Returns { player: id, count: N } if a single player has scored 3+ in a row, else null
+function getOnFireStreak(events) {
+  if (!events || events.length < 3) return null;
+  const last = events[events.length - 1].player;
+  let count = 0;
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].player === last) count++;
+    else break;
+  }
+  return count >= 3 ? { player: last, count } : null;
+}
+
+// ---------- Match duration formatter ----------
+function formatDuration(ms) {
+  if (!ms || ms < 0) return "—";
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  if (m === 0) return `${s}s`;
+  return `${m}m ${s}s`;
+}
+
 // ---------- Image helper ----------
 function resizeImageToDataUrl(file, size = 200) {
   return new Promise((resolve, reject) => {
@@ -189,12 +212,23 @@ export default function App() {
   const [modal, setModal] = useState(null);
   const [toast, setToast] = useState(null);
   const [swapSelectedId, setSwapSelectedId] = useState(null); // playerId currently picked up for swap
+  const [isPortrait, setIsPortrait] = useState(() => typeof window !== "undefined" && window.innerHeight > window.innerWidth);
 
   useEffect(() => {
     setState(loadState());
   }, []);
 
   useEffect(() => { if (state) saveState(state); }, [state]);
+
+  useEffect(() => {
+    const onResize = () => setIsPortrait(window.innerHeight > window.innerWidth);
+    window.addEventListener("resize", onResize);
+    window.addEventListener("orientationchange", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("orientationchange", onResize);
+    };
+  }, []);
 
   if (!state) {
     return <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#F4EFE6", color: "#1A1612" }}>Loading…</div>;
@@ -206,6 +240,7 @@ export default function App() {
   const teamB = currentMatch.teamB.map((id) => playerById[id]).filter(Boolean);
   const winner = detectWin(currentMatch.scores, matchTarget);
   const matchPointTeam = detectMatchPoint(currentMatch.scores, matchTarget);
+  const fireStreak = getOnFireStreak(currentMatch.events);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2200); };
 
@@ -381,7 +416,7 @@ export default function App() {
   const lastEventLabel = lastEvent ? playerById[lastEvent.player]?.name : null;
 
   return (
-    <div style={{ minHeight: "100vh", height: "100vh", background: "var(--bg)", color: "var(--ink)", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+    <div style={{ minHeight: "100vh", height: "100vh", background: (isPortrait && view === "court") ? "#FFFFFF" : "var(--bg)", color: "var(--ink)", overflow: "hidden", display: "flex", flexDirection: "column" }}>
       <style>{`
         :root {
           --bg: #F4EFE6; --bg-card: #FBF7EE; --ink: #1A1612; --ink-muted: #6B6359;
@@ -405,21 +440,45 @@ export default function App() {
       `}</style>
 
       {view === "court" ? (
-        <CourtView
-          teamA={teamA} teamB={teamB} scores={currentMatch.scores}
-          playerPoints={currentMatch.playerPoints} pulse={pulse}
-          winner={winner} matchPointTeam={matchPointTeam}
-          matchTarget={matchTarget}
-          eventCount={currentMatch.events.length}
-          lastEventLabel={lastEventLabel}
-          onTap={onPlayerTap} onLongPress={onPlayerLongPress}
-          swapSelectedId={swapSelectedId}
-          onSwapButton={enterSwapModeEmpty}
-          onCancelSwap={cancelSwap}
-          playerById={playerById}
-          onUndo={undo} onEnd={endMatch}
-          onMenu={() => setView("menu")}
-        />
+        isPortrait ? (
+          <PortraitCourtView
+            teamA={teamA} teamB={teamB} scores={currentMatch.scores}
+            playerPoints={currentMatch.playerPoints} pulse={pulse}
+            winner={winner} matchPointTeam={matchPointTeam}
+            matchTarget={matchTarget}
+            eventCount={currentMatch.events.length}
+            lastEventLabel={lastEventLabel}
+            onTap={onPlayerTap} onLongPress={onPlayerLongPress}
+            swapSelectedId={swapSelectedId}
+            onSwapButton={enterSwapModeEmpty}
+            onCancelSwap={cancelSwap}
+            playerById={playerById}
+            onUndo={undo} onEnd={endMatch}
+            onMenu={() => setView("menu")}
+            fireStreak={fireStreak}
+            onReset={resetCurrent}
+            startedAt={currentMatch.startedAt}
+          />
+        ) : (
+          <CourtView
+            teamA={teamA} teamB={teamB} scores={currentMatch.scores}
+            playerPoints={currentMatch.playerPoints} pulse={pulse}
+            winner={winner} matchPointTeam={matchPointTeam}
+            matchTarget={matchTarget}
+            eventCount={currentMatch.events.length}
+            lastEventLabel={lastEventLabel}
+            onTap={onPlayerTap} onLongPress={onPlayerLongPress}
+            swapSelectedId={swapSelectedId}
+            onSwapButton={enterSwapModeEmpty}
+            onCancelSwap={cancelSwap}
+            playerById={playerById}
+            onUndo={undo} onEnd={endMatch}
+            onMenu={() => setView("menu")}
+            fireStreak={fireStreak}
+            onReset={resetCurrent}
+            startedAt={currentMatch.startedAt}
+          />
+        )
       ) : (
         <MenuView
           state={state} menuTab={menuTab} setMenuTab={setMenuTab}
@@ -449,7 +508,7 @@ export default function App() {
 }
 
 // ---------- Court View (landscape-optimized) ----------
-function CourtView({ teamA, teamB, scores, playerPoints, pulse, winner, matchPointTeam, matchTarget, eventCount, lastEventLabel, onTap, onLongPress, swapSelectedId, onSwapButton, onCancelSwap, playerById, onUndo, onEnd, onMenu }) {
+function CourtView({ teamA, teamB, scores, playerPoints, pulse, winner, matchPointTeam, matchTarget, eventCount, lastEventLabel, onTap, onLongPress, swapSelectedId, onSwapButton, onCancelSwap, playerById, onUndo, onEnd, onMenu, fireStreak, onReset, startedAt }) {
   const inSwapMode = !!swapSelectedId;
   const selectedName = swapSelectedId ? playerById[swapSelectedId]?.name : null;
   return (
@@ -476,13 +535,23 @@ function CourtView({ teamA, teamB, scores, playerPoints, pulse, winner, matchPoi
           </>
         ) : (
           <>
-            <button onClick={onMenu} style={{
-              background: "transparent", border: "none", padding: 6,
-              display: "flex", alignItems: "center", gap: 6, color: "var(--ink-muted)",
-            }}>
-              <Menu size={18} />
-              <span style={{ fontSize: 12, fontWeight: 600 }}>Menu</span>
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <button onClick={onMenu} style={{
+                background: "transparent", border: "none", padding: 6,
+                display: "flex", alignItems: "center", gap: 6, color: "var(--ink-muted)",
+              }}>
+                <Menu size={18} />
+                <span style={{ fontSize: 12, fontWeight: 600 }}>Menu</span>
+              </button>
+              <button onClick={onReset} disabled={eventCount === 0} style={{
+                background: "transparent", border: "none", padding: 6,
+                display: "flex", alignItems: "center", color: "var(--ink-muted)",
+                opacity: eventCount === 0 ? 0.3 : 1,
+                cursor: eventCount === 0 ? "default" : "pointer",
+              }} aria-label="Reset points">
+                <RefreshCcw size={16} />
+              </button>
+            </div>
             <div style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--ink-muted)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
               Game · to {matchTarget} · {eventCount} pt{eventCount === 1 ? "" : "s"}
             </div>
@@ -505,7 +574,8 @@ function CourtView({ teamA, teamB, scores, playerPoints, pulse, winner, matchPoi
               pulsing={pulse === teamA[0].id}
               onTap={() => onTap(teamA[0].id)} onLongPress={() => onLongPress(teamA[0].id)}
               isSwapSelected={swapSelectedId === teamA[0].id}
-              isSwapTarget={swapSelectedId && swapSelectedId !== teamA[0].id} />
+              isSwapTarget={swapSelectedId && swapSelectedId !== teamA[0].id}
+              fireStreak={fireStreak} />
           </div>
         )}
         {teamA[1] && (
@@ -514,7 +584,8 @@ function CourtView({ teamA, teamB, scores, playerPoints, pulse, winner, matchPoi
               pulsing={pulse === teamA[1].id}
               onTap={() => onTap(teamA[1].id)} onLongPress={() => onLongPress(teamA[1].id)}
               isSwapSelected={swapSelectedId === teamA[1].id}
-              isSwapTarget={swapSelectedId && swapSelectedId !== teamA[1].id} />
+              isSwapTarget={swapSelectedId && swapSelectedId !== teamA[1].id}
+              fireStreak={fireStreak} />
           </div>
         )}
         {teamB[0] && (
@@ -523,7 +594,8 @@ function CourtView({ teamA, teamB, scores, playerPoints, pulse, winner, matchPoi
               pulsing={pulse === teamB[0].id}
               onTap={() => onTap(teamB[0].id)} onLongPress={() => onLongPress(teamB[0].id)}
               isSwapSelected={swapSelectedId === teamB[0].id}
-              isSwapTarget={swapSelectedId && swapSelectedId !== teamB[0].id} />
+              isSwapTarget={swapSelectedId && swapSelectedId !== teamB[0].id}
+              fireStreak={fireStreak} />
           </div>
         )}
         {teamB[1] && (
@@ -532,7 +604,8 @@ function CourtView({ teamA, teamB, scores, playerPoints, pulse, winner, matchPoi
               pulsing={pulse === teamB[1].id}
               onTap={() => onTap(teamB[1].id)} onLongPress={() => onLongPress(teamB[1].id)}
               isSwapSelected={swapSelectedId === teamB[1].id}
-              isSwapTarget={swapSelectedId && swapSelectedId !== teamB[1].id} />
+              isSwapTarget={swapSelectedId && swapSelectedId !== teamB[1].id}
+              fireStreak={fireStreak} />
           </div>
         )}
 
@@ -540,40 +613,14 @@ function CourtView({ teamA, teamB, scores, playerPoints, pulse, winner, matchPoi
           <CenterColumn scores={scores} matchPointTeam={matchPointTeam} />
         </div>
 
-        {/* Victory overlay */}
+        {/* Victory: full match summary */}
         {winner && (
-          <div style={{
-            position: "absolute", inset: 0, background: "rgba(26,22,18,0.85)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            zIndex: 50, padding: 24,
-          }}>
-            <div style={{
-              background: "var(--bg-card)", borderRadius: 20, padding: "24px 28px",
-              textAlign: "center", maxWidth: 440, width: "100%",
-            }}>
-              <div style={{ fontSize: 11, color: "var(--accent)", fontWeight: 800, letterSpacing: "0.2em", textTransform: "uppercase", marginBottom: 8, background: "var(--ink)", display: "inline-block", padding: "4px 12px", borderRadius: 999 }}>
-                Match complete
-              </div>
-              <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 28, letterSpacing: "-0.02em", marginTop: 6 }}>
-                Team {winner === "A" ? "1" : "2"} wins
-              </div>
-              <div style={{ fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: 44, marginTop: 4, color: "var(--ink)" }}>
-                {scores.A}–{scores.B}
-              </div>
-              <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-                <button onClick={onUndo} style={{
-                  flex: 1, padding: 11, borderRadius: 12, border: "1px solid var(--line)",
-                  background: "transparent", color: "var(--ink)", fontWeight: 600, fontSize: 13,
-                  fontFamily: "var(--font-display)",
-                }}>Undo last point</button>
-                <button onClick={onEnd} style={{
-                  flex: 2, padding: 11, borderRadius: 12, border: "none",
-                  background: "var(--ink)", color: "var(--bg)", fontWeight: 800, fontSize: 13,
-                  fontFamily: "var(--font-display)",
-                }}>Save match</button>
-              </div>
-            </div>
-          </div>
+          <MatchSummaryCard
+            scores={scores} playerPoints={playerPoints}
+            teamA={teamA} teamB={teamB} winner={winner}
+            startedAt={startedAt} matchTarget={matchTarget}
+            onUndo={onUndo} onSaveAndPlayAgain={onEnd}
+          />
         )}
       </div>
 
@@ -671,9 +718,11 @@ function ScoreNumber({ value, color, matchPoint, label }) {
 }
 
 // ---------- Player Tile (corner-optimized: name dominant, avatar secondary) ----------
-function PlayerTile({ player, team, points, pulsing, onTap, onLongPress, isSwapSelected, isSwapTarget }) {
+function PlayerTile({ player, team, points, pulsing, onTap, onLongPress, isSwapSelected, isSwapTarget, fireStreak }) {
   const teamColor = team === "A" ? "var(--teamA)" : "var(--teamB)";
   const teamSoft = team === "A" ? "var(--teamA-soft)" : "var(--teamB-soft)";
+  const isOnFire = fireStreak?.player === player.id;
+  const streakCount = isOnFire ? fireStreak.count : 0;
 
   const longPressTimer = useRef(null);
   const longPressFired = useRef(false);
@@ -723,6 +772,12 @@ function PlayerTile({ player, team, points, pulsing, onTap, onLongPress, isSwapS
   let topLabelColor = teamColor;
 
   if (pulsing) ringWidth = 4;
+  if (isOnFire) {
+    topLabel = `🔥 On fire ×${streakCount}`;
+    topLabelColor = "#FF4500";
+    ringColor = "#FF4500";
+    ringWidth = 3;
+  }
   if (isSwapSelected) {
     ringColor = "var(--ink)";
     ringWidth = 4;
@@ -1186,6 +1241,494 @@ function PlayerEditSheet({ player, team, onClose, updatePlayer }) {
             Reset to initials
           </button>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Portrait Court View — Option 1 (white & black classic)
+// Identical functionality to landscape CourtView, but with photo-forward
+// corner tiles and a giant stacked black score in the middle.
+// ============================================================================
+
+const PORTRAIT_TEAM_A = "#DC2626"; // saturated true-red
+const PORTRAIT_TEAM_B = "#0891B2"; // saturated cyan-teal
+const PORTRAIT_SCORE_INK = "#000000"; // pure black for max contrast
+
+function PortraitCourtView({ teamA, teamB, scores, playerPoints, pulse, winner, matchPointTeam, matchTarget, eventCount, lastEventLabel, onTap, onLongPress, swapSelectedId, onSwapButton, onCancelSwap, playerById, onUndo, onEnd, onMenu, fireStreak, onReset, startedAt }) {
+  const inSwapMode = !!swapSelectedId;
+  const selectedName = swapSelectedId ? (playerById[swapSelectedId]?.name || "") : null;
+
+  return (
+    <>
+      {/* Header */}
+      <div style={{
+        flexShrink: 0, padding: "10px 14px",
+        display: "flex", justifyContent: "space-between", alignItems: "center",
+        background: inSwapMode ? "var(--accent)" : "transparent",
+        borderBottom: "0.5px solid #E5E5E5",
+        transition: "background 200ms ease",
+        minHeight: 40,
+      }}>
+        {inSwapMode ? (
+          <>
+            <button onClick={onCancelSwap} style={{
+              background: "transparent", border: "none", padding: 6,
+              display: "flex", alignItems: "center", gap: 6, color: "#1A1612",
+            }}>
+              <X size={16} />
+              <span style={{ fontSize: 12, fontWeight: 700 }}>Cancel</span>
+            </button>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#1A1612", textAlign: "right" }}>
+              Swap <span style={{ textDecoration: "underline" }}>{selectedName}</span>…
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <button onClick={onMenu} style={{
+                background: "transparent", border: "none", padding: 6,
+                display: "flex", alignItems: "center", gap: 6, color: "#6B6359",
+              }}>
+                <Menu size={16} />
+                <span style={{ fontSize: 13, fontWeight: 600 }}>Menu</span>
+              </button>
+              <button onClick={onReset} disabled={eventCount === 0} style={{
+                background: "transparent", border: "none", padding: 6,
+                display: "flex", alignItems: "center", color: "#6B6359",
+                opacity: eventCount === 0 ? 0.3 : 1,
+                cursor: eventCount === 0 ? "default" : "pointer",
+              }} aria-label="Reset points">
+                <RefreshCcw size={15} />
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: "#6B6359", fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+              To {matchTarget} · {eventCount} pt{eventCount === 1 ? "" : "s"}
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Top row tiles — Team A (red), aligned with their score above */}
+      <div style={{ flexShrink: 0, padding: "16px 24px 8px", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        {teamA[0] && (
+          <PortraitPlayerTile player={teamA[0]} team="A" points={playerPoints[teamA[0].id] || 0}
+            pulsing={pulse === teamA[0].id}
+            onTap={() => onTap(teamA[0].id)} onLongPress={() => onLongPress(teamA[0].id)}
+            isSwapSelected={swapSelectedId === teamA[0].id}
+            isSwapTarget={swapSelectedId && swapSelectedId !== teamA[0].id}
+              fireStreak={fireStreak} />
+        )}
+        {teamA[1] && (
+          <PortraitPlayerTile player={teamA[1]} team="A" points={playerPoints[teamA[1].id] || 0}
+            pulsing={pulse === teamA[1].id}
+            onTap={() => onTap(teamA[1].id)} onLongPress={() => onLongPress(teamA[1].id)}
+            isSwapSelected={swapSelectedId === teamA[1].id}
+            isSwapTarget={swapSelectedId && swapSelectedId !== teamA[1].id}
+              fireStreak={fireStreak} />
+        )}
+      </div>
+
+      {/* Score (fills middle) */}
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", padding: "8px 16px", minHeight: 0 }}>
+        <PortraitScoreNumber value={scores.A} color={PORTRAIT_TEAM_A} matchPoint={!winner && (matchPointTeam === "A" || matchPointTeam === "both")} />
+        <div style={{ width: "55%", height: 2, background: PORTRAIT_SCORE_INK, opacity: 0.18, margin: "10px 0", borderRadius: 1 }} />
+        <PortraitScoreNumber value={scores.B} color={PORTRAIT_TEAM_B} matchPoint={!winner && (matchPointTeam === "B" || matchPointTeam === "both")} />
+      </div>
+
+      {/* Bottom row tiles — Team B (blue), aligned with their score above */}
+      <div style={{ flexShrink: 0, padding: "8px 24px 16px", display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
+        {teamB[0] && (
+          <PortraitPlayerTile player={teamB[0]} team="B" points={playerPoints[teamB[0].id] || 0}
+            pulsing={pulse === teamB[0].id}
+            onTap={() => onTap(teamB[0].id)} onLongPress={() => onLongPress(teamB[0].id)}
+            isSwapSelected={swapSelectedId === teamB[0].id}
+            isSwapTarget={swapSelectedId && swapSelectedId !== teamB[0].id}
+              fireStreak={fireStreak} />
+        )}
+        {teamB[1] && (
+          <PortraitPlayerTile player={teamB[1]} team="B" points={playerPoints[teamB[1].id] || 0}
+            pulsing={pulse === teamB[1].id}
+            onTap={() => onTap(teamB[1].id)} onLongPress={() => onLongPress(teamB[1].id)}
+            isSwapSelected={swapSelectedId === teamB[1].id}
+            isSwapTarget={swapSelectedId && swapSelectedId !== teamB[1].id}
+              fireStreak={fireStreak} />
+        )}
+      </div>
+
+      {/* Footer */}
+      <div style={{
+        flexShrink: 0, padding: "10px 14px", display: "flex", gap: 8,
+        borderTop: "0.5px solid #E5E5E5",
+      }}>
+        <button onClick={onUndo} disabled={eventCount === 0 || inSwapMode} style={{
+          flex: 2, padding: "11px 14px", borderRadius: 10,
+          border: "1px solid #DCD3C2",
+          background: eventCount > 0 && !inSwapMode ? "var(--accent)" : "#FAFAFA",
+          color: eventCount > 0 && !inSwapMode ? "#1A1612" : "#9A9A9A",
+          fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13,
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+          opacity: eventCount > 0 && !inSwapMode ? 1 : 0.55, minWidth: 0,
+        }}>
+          <Undo2 size={14} />
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            Undo{lastEventLabel ? ` · ${lastEventLabel}` : ""}
+          </span>
+        </button>
+        <button onClick={inSwapMode ? onCancelSwap : onSwapButton} style={{
+          flex: 1, padding: "11px 12px", borderRadius: 10,
+          border: inSwapMode ? "1px solid #1A1612" : "1px solid #DCD3C2",
+          background: inSwapMode ? "#1A1612" : "#FAFAFA",
+          color: inSwapMode ? "#FFFFFF" : "#1A1612",
+          fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13,
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+        }}>
+          <Shuffle size={14} />
+          <span>{inSwapMode ? "Cancel" : "Swap"}</span>
+        </button>
+        <button onClick={onEnd} disabled={inSwapMode} style={{
+          flex: 1, padding: "11px 12px", borderRadius: 10,
+          border: "1px solid #1A1612", background: "#1A1612", color: "#FFFFFF",
+          fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13,
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+          opacity: inSwapMode ? 0.4 : 1,
+        }}>
+          <Flag size={13} />
+          <span>End</span>
+        </button>
+      </div>
+
+      {/* Victory: full match summary */}
+      {winner && (
+        <MatchSummaryCard
+          scores={scores} playerPoints={playerPoints}
+          teamA={teamA} teamB={teamB} winner={winner}
+          startedAt={startedAt} matchTarget={matchTarget}
+          onUndo={onUndo} onSaveAndPlayAgain={onEnd}
+        />
+      )}
+    </>
+  );
+}
+
+function PortraitPlayerTile({ player, team, points, pulsing, onTap, onLongPress, isSwapSelected, isSwapTarget, fireStreak }) {
+  const teamColor = team === "A" ? PORTRAIT_TEAM_A : PORTRAIT_TEAM_B;
+  const isOnFire = fireStreak?.player === player.id;
+  const streakCount = isOnFire ? fireStreak.count : 0;
+
+  // Long press detection (mirrors PlayerTile)
+  const longPressTimer = useRef(null);
+  const longPressFired = useRef(false);
+  const startPos = useRef(null);
+
+  const clearTimer = () => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  };
+
+  const handlePointerDown = (e) => {
+    longPressFired.current = false;
+    startPos.current = { x: e.clientX, y: e.clientY };
+    longPressTimer.current = setTimeout(() => {
+      longPressFired.current = true;
+      longPressTimer.current = null;
+      onLongPress();
+    }, 500);
+  };
+
+  const handlePointerMove = (e) => {
+    if (!startPos.current || !longPressTimer.current) return;
+    const dx = e.clientX - startPos.current.x;
+    const dy = e.clientY - startPos.current.y;
+    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) clearTimer();
+  };
+
+  const handlePointerUp = () => {
+    clearTimer();
+    startPos.current = null;
+    if (!longPressFired.current) onTap();
+  };
+
+  const handlePointerCancel = () => {
+    clearTimer();
+    startPos.current = null;
+    longPressFired.current = false;
+  };
+
+  const ringColor = isSwapSelected ? "#1A1612" : (isOnFire ? "#FF4500" : teamColor);
+  const ringWidth = pulsing ? 5 : (isSwapSelected ? 4 : (isOnFire ? 4 : 3));
+
+  return (
+    <button
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerCancel}
+      onPointerLeave={handlePointerCancel}
+      onContextMenu={(e) => e.preventDefault()}
+      className={pulsing ? "pulse-tile" : ""}
+      style={{
+        background: "transparent", border: "none", padding: 4,
+        display: "flex", flexDirection: "column", alignItems: "center", gap: 6,
+        opacity: isSwapTarget ? 0.85 : 1,
+        position: "relative",
+        touchAction: "manipulation",
+        userSelect: "none", WebkitUserSelect: "none",
+        cursor: "pointer",
+      }}
+    >
+      <PortraitAvatar player={player} team={team} size={86} ringColor={ringColor} ringWidth={ringWidth} isSwapSelected={isSwapSelected} />
+      {isOnFire && (
+        <div className="mp-pulse" style={{
+          position: "absolute", top: -6, left: "50%", transform: "translateX(-50%)",
+          background: "#FF4500", color: "white",
+          fontSize: 9, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase",
+          padding: "3px 8px", borderRadius: 999, whiteSpace: "nowrap",
+          boxShadow: "0 1px 4px rgba(0,0,0,0.15)",
+        }}>🔥 ×{streakCount}</div>
+      )}
+      <div style={{
+        fontFamily: "var(--font-display)", fontWeight: 800,
+        fontSize: 13, letterSpacing: "0.06em", textTransform: "uppercase",
+        color: "#000000", marginTop: 2,
+        maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+      }}>{player.name}</div>
+      <div style={{
+        fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: 11,
+        padding: "2px 9px", borderRadius: 999,
+        background: teamColor, color: "white",
+      }}>×{points}</div>
+      {pulsing && (
+        <span className="float-pt" style={{
+          position: "absolute", left: "50%", top: 12,
+          transform: "translate(-50%, 0)",
+          fontFamily: "var(--font-mono)", fontWeight: 800, fontSize: 32,
+          color: teamColor, pointerEvents: "none",
+        }}>+1</span>
+      )}
+    </button>
+  );
+}
+
+function PortraitAvatar({ player, team, size = 86, ringColor, ringWidth = 3, isSwapSelected }) {
+  const teamColor = team === "A" ? PORTRAIT_TEAM_A : PORTRAIT_TEAM_B;
+  const fillColor = isSwapSelected ? "var(--accent)" : teamColor;
+  const baseStyle = {
+    width: size, height: size, borderRadius: "50%",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    overflow: "hidden", flexShrink: 0,
+    boxShadow: `0 0 0 ${ringWidth}px ${ringColor || teamColor}`,
+    transition: "box-shadow 200ms ease, background 200ms ease",
+  };
+
+  if (player.avatar?.type === "photo") {
+    return <img src={player.avatar.value} alt={player.name} style={{ ...baseStyle, objectFit: "cover", background: "white" }} />;
+  }
+  if (player.avatar?.type === "emoji") {
+    return (
+      <div style={{ ...baseStyle, background: fillColor, fontSize: size * 0.55, lineHeight: 1 }}>
+        {player.avatar.value}
+      </div>
+    );
+  }
+  // Initials in white on team color
+  const initials = (player.name || "?").split(/\s+/).map((s) => s[0]).filter(Boolean).join("").slice(0, 2).toUpperCase();
+  return (
+    <div style={{
+      ...baseStyle, background: fillColor, color: "white",
+      fontFamily: "var(--font-display)", fontWeight: 800,
+      fontSize: size * 0.36, letterSpacing: "-0.02em",
+    }}>{initials}</div>
+  );
+}
+
+function PortraitScoreNumber({ value, color, matchPoint }) {
+  return (
+    <div style={{ position: "relative", textAlign: "center", lineHeight: 1 }}>
+      {matchPoint && (
+        <div className="mp-pulse" style={{
+          position: "absolute", top: -16, left: "50%",
+          transform: "translateX(-50%)",
+          fontSize: 10, fontWeight: 800,
+          letterSpacing: "0.2em", textTransform: "uppercase",
+          background: color, color: "white",
+          padding: "3px 10px", borderRadius: 999,
+          whiteSpace: "nowrap",
+        }}>Match pt</div>
+      )}
+      <div style={{
+        fontFamily: '"SF Compact Display", "Helvetica Neue", system-ui, sans-serif',
+        fontWeight: 900,
+        fontSize: "clamp(140px, 32vh, 280px)",
+        letterSpacing: "-0.07em", lineHeight: 0.78,
+        color: PORTRAIT_SCORE_INK,
+      }}>
+        {String(value).padStart(2, "0")}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Match Summary Card — shown after a winner is detected.
+// Used by both landscape CourtView and PortraitCourtView.
+// Shows team breakdown, MVP, match duration. Primary action saves and resets
+// scores while keeping teams together for an immediate rematch.
+// ============================================================================
+
+function MatchSummaryCard({ scores, playerPoints, teamA, teamB, winner, startedAt, matchTarget, onUndo, onSaveAndPlayAgain }) {
+  // Compute MVP: highest individual scorer (across both teams, ties go to winning team)
+  const allPlayers = [...teamA, ...teamB];
+  let mvp = null;
+  let mvpPts = -1;
+  for (const p of allPlayers) {
+    const pts = playerPoints[p.id] || 0;
+    const onWinningTeam = winner === "A" ? teamA.some((q) => q.id === p.id) : teamB.some((q) => q.id === p.id);
+    // ties go to the winner's team
+    if (pts > mvpPts || (pts === mvpPts && onWinningTeam && !(mvp && winner === "A" ? teamA.some((q) => q.id === mvp.id) : teamB.some((q) => q.id === mvp?.id)))) {
+      mvp = p; mvpPts = pts;
+    }
+  }
+
+  const durationMs = startedAt ? Date.now() - startedAt : 0;
+  const durationStr = formatDuration(durationMs);
+
+  const renderTeam = (label, players, color) => (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{
+        fontSize: 10, fontWeight: 800, letterSpacing: "0.16em", textTransform: "uppercase",
+        color: color, marginBottom: 8, textAlign: "left",
+      }}>{label}</div>
+      {players.map((p) => {
+        const pts = playerPoints[p.id] || 0;
+        const isMvp = mvp && p.id === mvp.id;
+        return (
+          <div key={p.id} style={{
+            display: "flex", alignItems: "center", gap: 8, padding: "5px 0",
+            minWidth: 0,
+          }}>
+            <div style={{
+              width: 28, height: 28, borderRadius: "50%",
+              background: color, color: "white",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontWeight: 800, fontSize: 11,
+              flexShrink: 0, overflow: "hidden",
+            }}>
+              {p.avatar?.type === "photo" ? (
+                <img src={p.avatar.value} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              ) : p.avatar?.type === "emoji" ? (
+                <span style={{ fontSize: 16 }}>{p.avatar.value}</span>
+              ) : (
+                (p.name || "?").split(/\s+/).map((s) => s[0]).filter(Boolean).join("").slice(0, 2).toUpperCase()
+              )}
+            </div>
+            <div style={{
+              flex: 1, fontSize: 13, fontWeight: 600,
+              fontFamily: "var(--font-display)", color: "#1A1612",
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            }}>{p.name}{isMvp && <span style={{ marginLeft: 6, fontSize: 11 }}>🌟</span>}</div>
+            <div style={{
+              fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: 13,
+              color: color, flexShrink: 0,
+            }}>×{pts}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, background: "rgba(26,22,18,0.88)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      zIndex: 50, padding: 20, overflow: "auto",
+    }}>
+      <div style={{
+        background: "#FBF7EE", borderRadius: 20, padding: "20px 24px 22px",
+        maxWidth: 420, width: "100%",
+        boxShadow: "0 20px 60px rgba(0,0,0,0.3)",
+      }}>
+        {/* Header pill */}
+        <div style={{ textAlign: "center", marginBottom: 12 }}>
+          <div style={{
+            fontSize: 10, color: "#F2D74E", fontWeight: 800,
+            letterSpacing: "0.2em", textTransform: "uppercase",
+            background: "#1A1612", display: "inline-block",
+            padding: "4px 12px", borderRadius: 999,
+          }}>🏆 Match complete</div>
+        </div>
+
+        {/* Big result */}
+        <div style={{ textAlign: "center", marginBottom: 14 }}>
+          <div style={{
+            fontFamily: "var(--font-display)", fontWeight: 800,
+            fontSize: 22, letterSpacing: "-0.02em", color: "#1A1612",
+          }}>
+            Team {winner === "A" ? "1" : "2"} wins
+          </div>
+          <div style={{
+            fontFamily: "var(--font-mono)", fontWeight: 700,
+            fontSize: 44, marginTop: 2, color: "#1A1612",
+            letterSpacing: "-0.04em", lineHeight: 1,
+          }}>
+            {scores.A}–{scores.B}
+          </div>
+          <div style={{
+            fontSize: 11, color: "#6B6359", fontWeight: 600,
+            letterSpacing: "0.08em", textTransform: "uppercase",
+            marginTop: 6,
+          }}>
+            To {matchTarget} · {durationStr}
+          </div>
+        </div>
+
+        {/* Team breakdowns side by side */}
+        <div style={{
+          display: "flex", gap: 14, padding: "14px 0",
+          borderTop: "1px solid #DCD3C2", borderBottom: "1px solid #DCD3C2",
+          marginBottom: 14,
+        }}>
+          {renderTeam("Team 1", teamA, "#D63B26")}
+          <div style={{ width: 1, background: "#DCD3C2" }}></div>
+          {renderTeam("Team 2", teamB, "#0F4C4C")}
+        </div>
+
+        {/* MVP callout */}
+        {mvp && (
+          <div style={{
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+            fontSize: 12, color: "#6B6359", fontWeight: 600,
+            marginBottom: 14,
+          }}>
+            <span>🌟</span>
+            <span>MVP:</span>
+            <span style={{ color: "#1A1612", fontWeight: 800 }}>{mvp.name}</span>
+            <span>· {mvpPts} pt{mvpPts === 1 ? "" : "s"}</span>
+          </div>
+        )}
+
+        {/* Buttons */}
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={onUndo} style={{
+            flex: 1, padding: 11, borderRadius: 12, border: "1px solid #DCD3C2",
+            background: "transparent", color: "#1A1612",
+            fontWeight: 600, fontSize: 13, fontFamily: "var(--font-display)",
+            cursor: "pointer",
+          }}>Undo last point</button>
+          <button onClick={onSaveAndPlayAgain} style={{
+            flex: 2, padding: 11, borderRadius: 12, border: "none",
+            background: "#1A1612", color: "#FBF7EE",
+            fontWeight: 800, fontSize: 13, fontFamily: "var(--font-display)",
+            cursor: "pointer",
+          }}>Save & play again</button>
+        </div>
+        <div style={{
+          fontSize: 11, color: "#9A9A9A", fontWeight: 500,
+          textAlign: "center", marginTop: 8, fontStyle: "italic",
+        }}>Tip: screenshot this card to share the result</div>
       </div>
     </div>
   );
